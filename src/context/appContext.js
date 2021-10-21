@@ -1,5 +1,12 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useCallback
+} from 'react';
+import { createClient } from '@supabase/supabase-js';
 
 const AppContext = createContext({});
 
@@ -8,29 +15,28 @@ const AppContextProvider = ({ children }) => {
   const supabaseKey = process.env.REACT_APP_SUPABASE_KEY;
   const supabase = createClient(supabaseUrl, supabaseKey);
 
-  let mySubscription = null;
-  const [username, setUsername] = useState("");
+  let mySubscription = useRef(null);
+  const [username, setUsername] = useState('');
   const [messages, setMessages] = useState([]);
   const [sliceCount, setSliceCount] = useState(10);
   const [slicedMessages, setSlicedMessages] = useState([]);
-  const [error, setError] = useState("");
+  const [error, setError] = useState('');
   const [loadingInitial, setLoadingInitial] = useState(true);
   const [isGuest, setIsGuest] = useState(true);
-  const [routeHash, setRouteHash] = useState("");
+  const [routeHash, setRouteHash] = useState('');
   const [isOnBottom, setIsOnBottom] = useState(false);
-  const [newIncomingMessageTrigger, setNewIncomingMessageTrigger] = useState(
-    null
-  );
+  const [newIncomingMessageTrigger, setNewIncomingMessageTrigger] =
+    useState(null);
   const [unviewedMessageCount, setUnviewedMessageCount] = useState(0);
-  const [countryCode, setCountryCode] = useState("");
+  const [countryCode, setCountryCode] = useState('');
 
   const getLocation = async () => {
     try {
-      const res = await fetch("https://api.db-ip.com/v2/free/self");
+      const res = await fetch('https://api.db-ip.com/v2/free/self');
       const resJSON = await res.json();
-      // console.log(`resJSON`, resJSON);
+      console.log(`resJSON`, resJSON);
       setCountryCode(resJSON.countryCode);
-      localStorage.setItem("countryCode", resJSON.countryCode);
+      localStorage.setItem('countryCode', resJSON.countryCode);
     } catch (error) {
       console.log(`error getting location`, error);
     }
@@ -39,43 +45,76 @@ const AppContextProvider = ({ children }) => {
   useEffect(() => {
     if (!messages.length) return;
     setSlicedMessages(messages.slice(0, sliceCount).reverse());
-  }, [sliceCount]);
+  }, [messages, sliceCount]);
+
+  const getInitialMessages = useCallback(async () => {
+    if (!messages.length) {
+      const { data, error } = await supabase
+        .from('messages')
+        .select()
+        .order('id', { ascending: false });
+      // console.log(`data`, data);
+      setLoadingInitial(false);
+      if (error) {
+        setError(error.message);
+        supabase.removeSubscription(mySubscription.current);
+        mySubscription.current = null;
+        return;
+      }
+      setSlicedMessages(data.slice(0, sliceCount).reverse());
+      setMessages(data);
+      scrollToBottom();
+    }
+  }, [messages, supabase, sliceCount]);
+
+  const getMessagesAndSubscribe = useCallback(async () => {
+    setError('');
+    if (!mySubscription.current) {
+      getInitialMessages();
+      mySubscription.current = supabase
+        .from('messages')
+        .on('*', (payload) => {
+          handleNewMessage(payload);
+        })
+        .subscribe();
+    }
+  }, [supabase, getInitialMessages]);
 
   useEffect(() => {
     getMessagesAndSubscribe();
 
-    // const user = supabase.auth.user();
-    // setIsGuest(true);
-    // const username = user.email.split("@")[0];
-    const storedUser = localStorage.getItem("username");
-    const storedCountryCode = localStorage.getItem("countryCode");
+    const user = supabase.auth.user();
+    if (user) setIsGuest(false);
+    const username = user?.email?.split('@')[0];
+    const storedUser = localStorage.getItem('username');
+    const storedCountryCode = localStorage.getItem('countryCode');
 
-    if (storedUser) setUsername(storedUser);
+    if (storedUser) setUsername(storedUser ?? username);
     else setUsername(`@rtc${Date.now().toString().substr(-4)}`);
 
     if (storedCountryCode) setCountryCode(storedCountryCode);
     else getLocation();
 
     supabase.auth.onAuthStateChange((event, session) => {
-      console.log("onAuthStateChange", { event, session });
+      console.log('onAuthStateChange', { event, session });
       // if(event === "SIGNED_OUT")
     });
     const { hash, pathname } = window.location;
-    if (hash && pathname === "/") {
-      console.log("hash", hash);
+    if (hash && pathname === '/') {
+      console.log('hash', hash);
       setRouteHash(hash);
     }
 
     return () => {
       supabase.removeSubscription();
-      console.log("Remove supabase subscription by useEffect unmount");
+      console.log('Remove supabase subscription by useEffect unmount');
     };
-  }, []);
+  }, [getMessagesAndSubscribe, supabase]);
 
   useEffect(() => {
     if (newIncomingMessageTrigger?.username === username) scrollToBottom();
     else setUnviewedMessageCount((prevCount) => prevCount + 1);
-  }, [newIncomingMessageTrigger]);
+  }, [username, newIncomingMessageTrigger]);
 
   const handleNewMessage = (payload) => {
     //* Sliced messages are already reversed
@@ -83,39 +122,6 @@ const AppContextProvider = ({ children }) => {
     setMessages((prevMessages) => [payload.new, ...prevMessages]);
     //* needed to trigger react state because I need access to the username state
     setNewIncomingMessageTrigger(payload.new);
-  };
-
-  const getInitialMessages = async () => {
-    if (!messages.length) {
-      const { data, error } = await supabase
-        .from("messages")
-        .select()
-        .order("id", { ascending: false });
-      // console.log(`data`, data);
-      setLoadingInitial(false);
-      if (error) {
-        setError(error.message);
-        supabase.removeSubscription(mySubscription);
-        mySubscription = null;
-        return;
-      }
-      setSlicedMessages(data.slice(0, sliceCount).reverse());
-      setMessages(data);
-      scrollToBottom();
-    }
-  };
-
-  const getMessagesAndSubscribe = async () => {
-    setError("");
-    if (!mySubscription) {
-      getInitialMessages();
-      mySubscription = supabase
-        .from("messages")
-        .on("*", (payload) => {
-          handleNewMessage(payload);
-        })
-        .subscribe();
-    }
   };
 
   const scrollRef = useRef();
@@ -157,7 +163,7 @@ const AppContextProvider = ({ children }) => {
         scrollToBottom,
         isOnBottom,
         country: countryCode,
-        unviewedMessageCount,
+        unviewedMessageCount
       }}
     >
       {children}
